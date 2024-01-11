@@ -1,7 +1,11 @@
 #[macro_use]
 extern crate dotenv_codegen;
+extern crate git2;
+
+use std::path::Path;
 
 use clap::Parser;
+use git2::{Cred, RemoteCallbacks};
 use gitlab::api::{projects, Query};
 use gitlab::Gitlab;
 use serde::Deserialize;
@@ -21,25 +25,60 @@ struct Args {
 
     /// The URL of the repository to clone
     #[arg(short, long)]
-    url: String,
+    repo: String,
+
+    /// The username to use for authentication
+    #[arg(long)]
+    username: String,
+
+    /// The password to use for authentication
+    #[arg(long)]
+    password: String,
 }
 
 /* Get project info from Gitlab */
 fn get_project(url: &str) -> Project {
-    let gl_client = Gitlab::new(dotenv!("GITLAB_URL"), dotenv!("GITLAB_TOKEN")).unwrap();
+    let client = Gitlab::new(dotenv!("GITLAB_URL"), dotenv!("GITLAB_TOKEN")).unwrap();
 
-    let gl_endpoint = projects::Project::builder().project(url).build().unwrap();
-    let gl_project: Project = gl_endpoint.query(&gl_client).unwrap();
+    let endpoint = projects::Project::builder().project(url).build().unwrap();
+    let project: Project = endpoint.query(&client).unwrap();
 
-    gl_project
+    project
+}
+
+/* Clone project from Gitlab */
+fn clone_project(repo: &str, path: &str, username: &str, password: &str) {
+    // Callbacks for authentication
+    let mut cb = RemoteCallbacks::new();
+    cb.credentials(|_url, _username_from_url, _allowed_types| {
+        Cred::userpass_plaintext(username, password)
+    });
+
+    // Prepare fetch options
+    let mut fetch_options = git2::FetchOptions::new();
+    fetch_options.remote_callbacks(cb);
+
+    // Prepare builder
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.remote_create(|repo, name, url| repo.remote_with_fetch(name, url, "+refs/*:refs/*"));
+
+    builder.fetch_options(fetch_options);
+    builder.bare(true);
+
+    // Clone
+    builder.clone(repo, Path::new(&path)).unwrap();
 }
 
 fn main() {
     dotenv::dotenv().ok();
 
     let args = Args::parse();
-    println!("{:?}", args);
+    let project = get_project(&args.repo);
 
-    let project = get_project(&args.url);
-    dbg!(project);
+    clone_project(
+        &project.http_url_to_repo,
+        &args.path,
+        &args.username,
+        &args.password,
+    );
 }
